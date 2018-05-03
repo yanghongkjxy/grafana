@@ -1,7 +1,6 @@
-///<reference path="../../../headers/common.d.ts" />
-
 import _ from 'lodash';
 import queryPart from './query_part';
+import kbn from 'app/core/utils/kbn';
 
 export default class InfluxQuery {
   target: any;
@@ -11,23 +10,18 @@ export default class InfluxQuery {
   templateSrv: any;
   scopedVars: any;
 
+  /** @ngInject */
   constructor(target, templateSrv?, scopedVars?) {
     this.target = target;
     this.templateSrv = templateSrv;
     this.scopedVars = scopedVars;
 
     target.policy = target.policy || 'default';
-    target.dsType = 'influxdb';
     target.resultFormat = target.resultFormat || 'time_series';
+    target.orderByTime = target.orderByTime || 'ASC';
     target.tags = target.tags || [];
-    target.groupBy = target.groupBy || [
-      {type: 'time', params: ['$interval']},
-      {type: 'fill', params: ['null']},
-    ];
-    target.select = target.select || [[
-      {type: 'field', params: ['value']},
-      {type: 'mean', params: []},
-    ]];
+    target.groupBy = target.groupBy || [{ type: 'time', params: ['$__interval'] }, { type: 'fill', params: ['null'] }];
+    target.select = target.select || [[{ type: 'field', params: ['value'] }, { type: 'mean', params: [] }]];
 
     this.updateProjection();
   }
@@ -42,7 +36,7 @@ export default class InfluxQuery {
   updatePersistedParts() {
     this.target.select = _.map(this.selectModels, function(selectParts) {
       return _.map(selectParts, function(part: any) {
-        return {type: part.def.type, params: part.params};
+        return { type: part.def.type, params: part.params };
       });
     });
   }
@@ -59,7 +53,7 @@ export default class InfluxQuery {
     var stringParts = value.match(/^(\w+)\((.*)\)$/);
     var typePart = stringParts[1];
     var arg = stringParts[2];
-    var partModel = queryPart.create({type: typePart, params: [arg]});
+    var partModel = queryPart.create({ type: typePart, params: [arg] });
     var partCount = this.target.groupBy.length;
 
     if (partCount === 0) {
@@ -67,8 +61,8 @@ export default class InfluxQuery {
     } else if (typePart === 'time') {
       this.target.groupBy.splice(0, 0, partModel.part);
     } else if (typePart === 'tag') {
-      if (this.target.groupBy[partCount-1].type === 'fill') {
-        this.target.groupBy.splice(partCount-1, 0, partModel.part);
+      if (this.target.groupBy[partCount - 1].type === 'fill') {
+        this.target.groupBy.splice(partCount - 1, 0, partModel.part);
       } else {
         this.target.groupBy.push(partModel.part);
       }
@@ -125,13 +119,13 @@ export default class InfluxQuery {
   }
 
   addSelectPart(selectParts, type) {
-    var partModel = queryPart.create({type: type});
+    var partModel = queryPart.create({ type: type });
     partModel.def.addStrategy(selectParts, partModel, this);
     this.updatePersistedParts();
   }
 
   private renderTagCondition(tag, index, interpolate) {
-    var str = "";
+    var str = '';
     var operator = tag.operator;
     var value = tag.value;
     if (index > 0) {
@@ -151,29 +145,47 @@ export default class InfluxQuery {
       if (interpolate) {
         value = this.templateSrv.replace(value, this.scopedVars);
       }
-      value = "'" + value.replace('\\', '\\\\') + "'";
-    } else if (interpolate){
+      if (operator !== '>' && operator !== '<') {
+        value = "'" + value.replace(/\\/g, '\\\\') + "'";
+      }
+    } else if (interpolate) {
       value = this.templateSrv.replace(value, this.scopedVars, 'regex');
     }
 
     return str + '"' + tag.key + '" ' + operator + ' ' + value;
   }
 
-  getMeasurementAndPolicy() {
+  getMeasurementAndPolicy(interpolate) {
     var policy = this.target.policy;
-    var measurement = this.target.measurement;
+    var measurement = this.target.measurement || 'measurement';
 
-    if (!measurement.match('^/.*/')) {
-      measurement = '"' + measurement+ '"';
+    if (!measurement.match('^/.*/$')) {
+      measurement = '"' + measurement + '"';
+    } else if (interpolate) {
+      measurement = this.templateSrv.replace(measurement, this.scopedVars, 'regex');
     }
 
     if (policy !== 'default') {
       policy = '"' + this.target.policy + '".';
     } else {
-      policy = "";
+      policy = '';
     }
 
     return policy + measurement;
+  }
+
+  interpolateQueryStr(value, variable, defaultFormatFn) {
+    // if no multi or include all do not regexEscape
+    if (!variable.multi && !variable.includeAll) {
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      return kbn.regexEscape(value);
+    }
+
+    var escapedValues = _.map(value, kbn.regexEscape);
+    return '(' + escapedValues.join('|') + ')';
   }
 
   render(interpolate?) {
@@ -181,21 +193,17 @@ export default class InfluxQuery {
 
     if (target.rawQuery) {
       if (interpolate) {
-        return this.templateSrv.replace(target.query, this.scopedVars, 'regex');
+        return this.templateSrv.replace(target.query, this.scopedVars, this.interpolateQueryStr);
       } else {
         return target.query;
       }
-    }
-
-    if (!target.measurement) {
-      throw {message: "Metric measurement is missing"};
     }
 
     var query = 'SELECT ';
     var i, y;
     for (i = 0; i < this.selectModels.length; i++) {
       let parts = this.selectModels[i];
-      var selectText = "";
+      var selectText = '';
       for (y = 0; y < parts.length; y++) {
         let part = parts[y];
         selectText = part.render(selectText);
@@ -207,19 +215,22 @@ export default class InfluxQuery {
       query += selectText;
     }
 
-    query += ' FROM ' + this.getMeasurementAndPolicy() + ' WHERE ';
+    query += ' FROM ' + this.getMeasurementAndPolicy(interpolate) + ' WHERE ';
     var conditions = _.map(target.tags, (tag, index) => {
       return this.renderTagCondition(tag, index, interpolate);
     });
 
-    query += conditions.join(' ');
-    query += (conditions.length > 0 ? ' AND ' : '') + '$timeFilter';
+    if (conditions.length > 0) {
+      query += '(' + conditions.join(' ') + ') AND ';
+    }
 
-    var groupBySection = "";
+    query += '$timeFilter';
+
+    var groupBySection = '';
     for (i = 0; i < this.groupByParts.length; i++) {
       var part = this.groupByParts[i];
       if (i > 0) {
-        // for some reason fill has no seperator
+        // for some reason fill has no separator
         groupBySection += part.def.type === 'fill' ? ' ' : ', ';
       }
       groupBySection += part.render('');
@@ -233,6 +244,25 @@ export default class InfluxQuery {
       query += ' fill(' + target.fill + ')';
     }
 
+    if (target.orderByTime === 'DESC') {
+      query += ' ORDER BY time DESC';
+    }
+
+    if (target.limit) {
+      query += ' LIMIT ' + target.limit;
+    }
+
+    if (target.slimit) {
+      query += ' SLIMIT ' + target.slimit;
+    }
+
     return query;
+  }
+
+  renderAdhocFilters(filters) {
+    var conditions = _.map(filters, (tag, index) => {
+      return this.renderTagCondition(tag, index, false);
+    });
+    return conditions.join(' ');
   }
 }

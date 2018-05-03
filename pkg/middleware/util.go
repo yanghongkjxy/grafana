@@ -17,6 +17,14 @@ func Gziper() macaron.Handler {
 			return
 		}
 
+		if strings.HasPrefix(requestPath, "/api/plugin-proxy/") {
+			return
+		}
+
+		if strings.HasPrefix(requestPath, "/metrics") {
+			return
+		}
+
 		ctx.Invoke(macaronGziper)
 	}
 }

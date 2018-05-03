@@ -6,6 +6,11 @@
   color: $brand-primary;
 }
 
+.emphasis-word {
+  font-weight: 500;
+  color: $text-color-emphasis;
+}
+
 // Close icons
 // --------------------------------------------------
 .close {
@@ -16,7 +21,7 @@
   font-weight: bold;
   line-height: $line-height-base;
   color: $black;
-  text-shadow: 0 1px 0 rgba(255,255,255,1);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 1);
 
   &:hover,
   &:focus {
@@ -42,11 +47,11 @@ button.close {
 // Utility classes
 // --------------------------------------------------
 
-
 // Quick floats
 .pull-right {
   float: right !important;
 }
+
 .pull-left {
   float: left !important;
 }
@@ -55,16 +60,21 @@ button.close {
 .hide {
   display: none;
 }
+
 .show {
   display: block;
 }
 
 // Visibility
 .invisible {
-  visibility: hidden;
+  visibility: hidden !important;
 }
 
 // For Affix plugin
 .affix {
   position: fixed;
+}
+
+.d-inline-block {
+  display: inline-block;
 }

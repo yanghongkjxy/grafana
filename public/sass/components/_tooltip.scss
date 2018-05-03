@@ -2,7 +2,6 @@
 // Tooltips
 // --------------------------------------------------
 
-
 // Base class
 .tooltip {
   position: absolute;
@@ -12,11 +11,25 @@
   font-size: 11px;
   line-height: 1.4;
   @include opacity(0);
-  &.in     { @include opacity(100); }
-  &.top    { margin-top:  -3px; padding: 5px 0; }
-  &.right  { margin-left:  3px; padding: 0 5px; }
-  &.bottom { margin-top:   3px; padding: 5px 0; }
-  &.left   { margin-left: -3px; padding: 0 5px; }
+  &.in {
+    @include opacity(100);
+  }
+  &.top {
+    margin-top: -3px;
+    padding: 5px 0;
+  }
+  &.right {
+    margin-left: 3px;
+    padding: 0 5px;
+  }
+  &.bottom {
+    margin-top: 3px;
+    padding: 5px 0;
+  }
+  &.left {
+    margin-left: -3px;
+    padding: 0 5px;
+  }
 }
 
 // Wrapper for the tooltip content
@@ -27,6 +40,7 @@
   text-align: center;
   text-decoration: none;
   background-color: $tooltipBackground;
+  border-radius: 2px;
 }
 
 // Arrows
@@ -37,6 +51,7 @@
   border-color: transparent;
   border-style: solid;
 }
+
 .tooltip {
   &.top .tooltip-arrow {
     bottom: 0;
@@ -69,13 +84,13 @@
 }
 
 .grafana-tooltip {
-  position : absolute;
+  position: absolute;
   top: -1000;
   left: 0;
   color: $tooltipColor;
   padding: 10px;
   font-size: 11pt;
-  font-weight : 200;
+  font-weight: 200;
   background-color: $tooltipBackground;
   border-radius: 5px;
   z-index: 9999;
@@ -88,14 +103,6 @@
   }
 }
 
-.grafana-tooltip hr {
- padding: 2px;
- color: #c8c8c8;
- margin: 0px;
- border-bottom: 0px solid #c8c8c8;
-}
-
 .grafana-tip {
   padding-left: 5px;
 }
-

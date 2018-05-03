@@ -1,57 +1,71 @@
-///<reference path="../../../headers/common.d.ts" />
-
-import angular from 'angular';
 import _ from 'lodash';
-import moment from 'moment';
-
 import * as dateMath from 'app/core/utils/datemath';
+import { isVersionGtOrEq, SemVersion } from 'app/core/utils/version';
+import gfunc from './gfunc';
 
 /** @ngInject */
 export function GraphiteDatasource(instanceSettings, $q, backendSrv, templateSrv) {
   this.basicAuth = instanceSettings.basicAuth;
   this.url = instanceSettings.url;
   this.name = instanceSettings.name;
+  this.graphiteVersion = instanceSettings.jsonData.graphiteVersion || '0.9';
+  this.supportsTags = supportsTags(this.graphiteVersion);
   this.cacheTimeout = instanceSettings.cacheTimeout;
   this.withCredentials = instanceSettings.withCredentials;
   this.render_method = instanceSettings.render_method || 'POST';
+  this.funcDefs = null;
+  this.funcDefsPromise = null;
+
+  this.getQueryOptionsInfo = function() {
+    return {
+      maxDataPoints: true,
+      cacheTimeout: true,
+      links: [
+        {
+          text: 'Help',
+          url: 'http://docs.grafana.org/features/datasources/graphite/#using-graphite-in-grafana',
+        },
+      ],
+    };
+  };
 
   this.query = function(options) {
-    try {
-      var graphOptions = {
-        from: this.translateTime(options.rangeRaw.from, false),
-        until: this.translateTime(options.rangeRaw.to, true),
-        targets: options.targets,
-        format: options.format,
-        cacheTimeout: options.cacheTimeout || this.cacheTimeout,
-        maxDataPoints: options.maxDataPoints,
-      };
+    var graphOptions = {
+      from: this.translateTime(options.rangeRaw.from, false),
+      until: this.translateTime(options.rangeRaw.to, true),
+      targets: options.targets,
+      format: options.format,
+      cacheTimeout: options.cacheTimeout || this.cacheTimeout,
+      maxDataPoints: options.maxDataPoints,
+    };
 
-      var params = this.buildGraphiteParams(graphOptions, options.scopedVars);
-      if (params.length === 0) {
-        return $q.when([]);
-      }
-
-      if (options.format === 'png') {
-        return $q.when(this.url + '/render' + '?' + params.join('&'));
-      }
-
-      var httpOptions: any = {method: this.render_method, url: '/render'};
-
-      if (httpOptions.method === 'GET') {
-        httpOptions.url = httpOptions.url + '?' + params.join('&');
-      } else {
-        httpOptions.data = params.join('&');
-        httpOptions.headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
-      }
-
-      return this.doGraphiteRequest(httpOptions).then(this.convertDataPointsToMs);
-    } catch (err) {
-      return $q.reject(err);
+    var params = this.buildGraphiteParams(graphOptions, options.scopedVars);
+    if (params.length === 0) {
+      return $q.when({ data: [] });
     }
+
+    var httpOptions: any = {
+      method: 'POST',
+      url: '/render',
+      data: params.join('&'),
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-Dashboard-Id': options.dashboardId, // enables distributed tracing in ds_proxy
+        'X-Panel-Id': options.panelId, // enables distributed tracing in ds_proxy
+      },
+    };
+
+    if (options.panelId) {
+      httpOptions.requestId = this.name + '.panelId.' + options.panelId;
+    }
+
+    return this.doGraphiteRequest(httpOptions).then(this.convertDataPointsToMs);
   };
 
   this.convertDataPointsToMs = function(result) {
-    if (!result || !result.data) { return []; }
+    if (!result || !result.data) {
+      return [];
+    }
     for (var i = 0; i < result.data.length; i++) {
       var series = result.data[i];
       for (var y = 0; y < series.datapoints.length; y++) {
@@ -59,6 +73,18 @@ export function GraphiteDatasource(instanceSettings, $q, backendSrv, templateSrv
       }
     }
     return result;
+  };
+
+  this.parseTags = function(tagString) {
+    let tags = [];
+    tags = tagString.split(',');
+    if (tags.length === 1) {
+      tags = tagString.split(' ');
+      if (tags[0] === '') {
+        tags = [];
+      }
+    }
+    return tags;
   };
 
   this.annotationQuery = function(options) {
@@ -69,7 +95,7 @@ export function GraphiteDatasource(instanceSettings, $q, backendSrv, templateSrv
         rangeRaw: options.rangeRaw,
         targets: [{ target: target }],
         format: 'json',
-        maxDataPoints: 100
+        maxDataPoints: 100,
       };
 
       return this.query(graphiteQuery).then(function(result) {
@@ -80,12 +106,14 @@ export function GraphiteDatasource(instanceSettings, $q, backendSrv, templateSrv
 
           for (var y = 0; y < target.datapoints.length; y++) {
             var datapoint = target.datapoints[y];
-            if (!datapoint[0]) { continue; }
+            if (!datapoint[0]) {
+              continue;
+            }
 
             list.push({
               annotation: options.annotation,
               time: datapoint[1],
-              title: target.target
+              title: target.target,
             });
           }
         }
@@ -95,19 +123,25 @@ export function GraphiteDatasource(instanceSettings, $q, backendSrv, templateSrv
     } else {
       // Graphite event as annotation
       var tags = templateSrv.replace(options.annotation.tags);
-      return this.events({range: options.rangeRaw, tags: tags}).then(function(results) {
+      return this.events({ range: options.rangeRaw, tags: tags }).then(results => {
         var list = [];
         for (var i = 0; i < results.data.length; i++) {
           var e = results.data[i];
+
+          var tags = e.tags;
+          if (_.isString(e.tags)) {
+            tags = this.parseTags(e.tags);
+          }
 
           list.push({
             annotation: options.annotation,
             time: e.when * 1000,
             title: e.what,
-            tags: e.tags,
-            text: e.data
+            tags: tags,
+            text: e.data,
           });
         }
+
         return list;
       });
     }
@@ -119,15 +153,22 @@ export function GraphiteDatasource(instanceSettings, $q, backendSrv, templateSrv
       if (options.tags) {
         tags = '&tags=' + options.tags;
       }
-
       return this.doGraphiteRequest({
         method: 'GET',
-        url: '/events/get_data?from=' + this.translateTime(options.range.from, false) +
-          '&until=' + this.translateTime(options.range.to, true) + tags,
+        url:
+          '/events/get_data?from=' +
+          this.translateTime(options.range.from, false) +
+          '&until=' +
+          this.translateTime(options.range.to, true) +
+          tags,
       });
     } catch (err) {
       return $q.reject(err);
     }
+  };
+
+  this.targetContainsTemplate = function(target) {
+    return templateSrv.variableExists(target.target);
   };
 
   this.translateTime = function(date, roundUp) {
@@ -160,40 +201,267 @@ export function GraphiteDatasource(instanceSettings, $q, backendSrv, templateSrv
     return date.unix();
   };
 
-  this.metricFindQuery = function(query) {
-    var interpolated;
-    try {
-      interpolated = encodeURIComponent(templateSrv.replace(query));
-    } catch (err) {
-      return $q.reject(err);
+  this.metricFindQuery = function(query, optionalOptions) {
+    let options = optionalOptions || {};
+    let interpolatedQuery = templateSrv.replace(query);
+
+    // special handling for tag_values(<tag>[,<expression>]*), this is used for template variables
+    let matches = interpolatedQuery.match(/^tag_values\(([^,]+)((, *[^,]+)*)\)$/);
+    if (matches) {
+      const expressions = [];
+      const exprRegex = /, *([^,]+)/g;
+      let match;
+      while ((match = exprRegex.exec(matches[2])) !== null) {
+        expressions.push(match[1]);
+      }
+      options.limit = 10000;
+      return this.getTagValuesAutoComplete(expressions, matches[1], undefined, options);
     }
 
-    return this.doGraphiteRequest({method: 'GET', url: '/metrics/find/?query=' + interpolated })
-    .then(function(results) {
-      return _.map(results.data, function(metric) {
+    // special handling for tags(<expression>[,<expression>]*), this is used for template variables
+    matches = interpolatedQuery.match(/^tags\(([^,]*)((, *[^,]+)*)\)$/);
+    if (matches) {
+      const expressions = [];
+      if (matches[1]) {
+        expressions.push(matches[1]);
+        const exprRegex = /, *([^,]+)/g;
+        let match;
+        while ((match = exprRegex.exec(matches[2])) !== null) {
+          expressions.push(match[1]);
+        }
+      }
+      options.limit = 10000;
+      return this.getTagsAutoComplete(expressions, undefined, options);
+    }
+
+    let httpOptions: any = {
+      method: 'GET',
+      url: '/metrics/find',
+      params: {
+        query: interpolatedQuery,
+      },
+      // for cancellations
+      requestId: options.requestId,
+    };
+
+    if (options.range) {
+      httpOptions.params.from = this.translateTime(options.range.from, false);
+      httpOptions.params.until = this.translateTime(options.range.to, true);
+    }
+
+    return this.doGraphiteRequest(httpOptions).then(results => {
+      return _.map(results.data, metric => {
         return {
           text: metric.text,
-          expandable: metric.expandable ? true : false
+          expandable: metric.expandable ? true : false,
         };
       });
     });
   };
 
+  this.getTags = function(optionalOptions) {
+    let options = optionalOptions || {};
+
+    let httpOptions: any = {
+      method: 'GET',
+      url: '/tags',
+      // for cancellations
+      requestId: options.requestId,
+    };
+
+    if (options.range) {
+      httpOptions.params.from = this.translateTime(options.range.from, false);
+      httpOptions.params.until = this.translateTime(options.range.to, true);
+    }
+
+    return this.doGraphiteRequest(httpOptions).then(results => {
+      return _.map(results.data, tag => {
+        return {
+          text: tag.tag,
+          id: tag.id,
+        };
+      });
+    });
+  };
+
+  this.getTagValues = function(tag, optionalOptions) {
+    let options = optionalOptions || {};
+
+    let httpOptions: any = {
+      method: 'GET',
+      url: '/tags/' + templateSrv.replace(tag),
+      // for cancellations
+      requestId: options.requestId,
+    };
+
+    if (options.range) {
+      httpOptions.params.from = this.translateTime(options.range.from, false);
+      httpOptions.params.until = this.translateTime(options.range.to, true);
+    }
+
+    return this.doGraphiteRequest(httpOptions).then(results => {
+      if (results.data && results.data.values) {
+        return _.map(results.data.values, value => {
+          return {
+            text: value.value,
+            id: value.id,
+          };
+        });
+      } else {
+        return [];
+      }
+    });
+  };
+
+  this.getTagsAutoComplete = (expressions, tagPrefix, optionalOptions) => {
+    let options = optionalOptions || {};
+
+    let httpOptions: any = {
+      method: 'GET',
+      url: '/tags/autoComplete/tags',
+      params: {
+        expr: _.map(expressions, expression => templateSrv.replace((expression || '').trim())),
+      },
+      // for cancellations
+      requestId: options.requestId,
+    };
+
+    if (tagPrefix) {
+      httpOptions.params.tagPrefix = tagPrefix;
+    }
+    if (options.limit) {
+      httpOptions.params.limit = options.limit;
+    }
+    if (options.range) {
+      httpOptions.params.from = this.translateTime(options.range.from, false);
+      httpOptions.params.until = this.translateTime(options.range.to, true);
+    }
+
+    return this.doGraphiteRequest(httpOptions).then(results => {
+      if (results.data) {
+        return _.map(results.data, tag => {
+          return { text: tag };
+        });
+      } else {
+        return [];
+      }
+    });
+  };
+
+  this.getTagValuesAutoComplete = (expressions, tag, valuePrefix, optionalOptions) => {
+    let options = optionalOptions || {};
+
+    let httpOptions: any = {
+      method: 'GET',
+      url: '/tags/autoComplete/values',
+      params: {
+        expr: _.map(expressions, expression => templateSrv.replace((expression || '').trim())),
+        tag: templateSrv.replace((tag || '').trim()),
+      },
+      // for cancellations
+      requestId: options.requestId,
+    };
+
+    if (valuePrefix) {
+      httpOptions.params.valuePrefix = valuePrefix;
+    }
+    if (options.limit) {
+      httpOptions.params.limit = options.limit;
+    }
+    if (options.range) {
+      httpOptions.params.from = this.translateTime(options.range.from, false);
+      httpOptions.params.until = this.translateTime(options.range.to, true);
+    }
+
+    return this.doGraphiteRequest(httpOptions).then(results => {
+      if (results.data) {
+        return _.map(results.data, value => {
+          return { text: value };
+        });
+      } else {
+        return [];
+      }
+    });
+  };
+
+  this.getVersion = function(optionalOptions) {
+    let options = optionalOptions || {};
+
+    let httpOptions = {
+      method: 'GET',
+      url: '/version',
+      requestId: options.requestId,
+    };
+
+    return this.doGraphiteRequest(httpOptions)
+      .then(results => {
+        if (results.data) {
+          let semver = new SemVersion(results.data);
+          return semver.isValid() ? results.data : '';
+        }
+        return '';
+      })
+      .catch(() => {
+        return '';
+      });
+  };
+
+  this.createFuncInstance = function(funcDef, options?) {
+    return gfunc.createFuncInstance(funcDef, options, this.funcDefs);
+  };
+
+  this.getFuncDef = function(name) {
+    return gfunc.getFuncDef(name, this.funcDefs);
+  };
+
+  this.waitForFuncDefsLoaded = function() {
+    return this.getFuncDefs();
+  };
+
+  this.getFuncDefs = function() {
+    if (this.funcDefsPromise !== null) {
+      return this.funcDefsPromise;
+    }
+
+    if (!supportsFunctionIndex(this.graphiteVersion)) {
+      this.funcDefs = gfunc.getFuncDefs(this.graphiteVersion);
+      this.funcDefsPromise = Promise.resolve(this.funcDefs);
+      return this.funcDefsPromise;
+    }
+
+    let httpOptions = {
+      method: 'GET',
+      url: '/functions',
+    };
+
+    this.funcDefsPromise = this.doGraphiteRequest(httpOptions)
+      .then(results => {
+        if (results.status !== 200 || typeof results.data !== 'object') {
+          this.funcDefs = gfunc.getFuncDefs(this.graphiteVersion);
+        } else {
+          this.funcDefs = gfunc.parseFuncDefs(results.data);
+        }
+        return this.funcDefs;
+      })
+      .catch(err => {
+        console.log('Fetching graphite functions error', err);
+        this.funcDefs = gfunc.getFuncDefs(this.graphiteVersion);
+        return this.funcDefs;
+      });
+
+    return this.funcDefsPromise;
+  };
+
   this.testDatasource = function() {
-    return this.metricFindQuery('*').then(function () {
-      return { status: "success", message: "Data source is working", title: "Success" };
+    let query = {
+      panelId: 3,
+      rangeRaw: { from: 'now-1h', to: 'now' },
+      targets: [{ target: 'constantLine(100)' }],
+      maxDataPoints: 300,
+    };
+    return this.query(query).then(function() {
+      return { status: 'success', message: 'Data source is working' };
     });
-  };
-
-  this.listDashboards = function(query) {
-    return this.doGraphiteRequest({ method: 'GET',  url: '/dashboard/find/', params: {query: query || ''} })
-    .then(function(results) {
-      return results.data.dashboards;
-    });
-  };
-
-  this.loadDashboard = function(dashName) {
-    return this.doGraphiteRequest({method: 'GET', url: '/dashboard/load/' + encodeURIComponent(dashName) });
   };
 
   this.doGraphiteRequest = function(options) {
@@ -215,15 +483,14 @@ export function GraphiteDatasource(instanceSettings, $q, backendSrv, templateSrv
 
   this.buildGraphiteParams = function(options, scopedVars) {
     var graphite_options = ['from', 'until', 'rawData', 'format', 'maxDataPoints', 'cacheTimeout'];
-    var clean_options = [], targets = {};
+    var clean_options = [],
+      targets = {};
     var target, targetValue, i;
     var regex = /\#([A-Z])/g;
     var intervalFormatFixRegex = /'(\d+)m'/gi;
     var hasTargets = false;
 
-    if (options.format !== 'png') {
-      options['format'] = 'json';
-    }
+    options['format'] = 'json';
 
     function fixIntervalFormat(match) {
       return match.replace('m', 'min').replace('M', 'mon');
@@ -245,7 +512,7 @@ export function GraphiteDatasource(instanceSettings, $q, backendSrv, templateSrv
     }
 
     function nestedSeriesRegexReplacer(match, g1) {
-      return targets[g1];
+      return targets[g1] || match;
     }
 
     for (i = 0; i < options.targets.length; i++) {
@@ -260,14 +527,16 @@ export function GraphiteDatasource(instanceSettings, $q, backendSrv, templateSrv
 
       if (!target.hide) {
         hasTargets = true;
-        clean_options.push("target=" + encodeURIComponent(targetValue));
+        clean_options.push('target=' + encodeURIComponent(targetValue));
       }
     }
 
-    _.each(options, function (value, key) {
-      if (_.indexOf(graphite_options, key) === -1) { return; }
+    _.each(options, function(value, key) {
+      if (_.indexOf(graphite_options, key) === -1) {
+        return;
+      }
       if (value) {
-        clean_options.push(key + "=" + encodeURIComponent(value));
+        clean_options.push(key + '=' + encodeURIComponent(value));
       }
     });
 
@@ -277,4 +546,12 @@ export function GraphiteDatasource(instanceSettings, $q, backendSrv, templateSrv
 
     return clean_options;
   };
+}
+
+function supportsTags(version: string): boolean {
+  return isVersionGtOrEq(version, '1.1');
+}
+
+function supportsFunctionIndex(version: string): boolean {
+  return isVersionGtOrEq(version, '1.1');
 }

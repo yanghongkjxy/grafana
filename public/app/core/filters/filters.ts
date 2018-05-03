@@ -1,5 +1,3 @@
-///<reference path="../../headers/common.d.ts" />
-
 import _ from 'lodash';
 import angular from 'angular';
 import moment from 'moment';
@@ -41,27 +39,26 @@ coreModule.filter('moment', function() {
 
 coreModule.filter('noXml', function() {
   var noXml = function(text) {
-  return _.isString(text)
-    ? text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/'/g, '&#39;')
-    .replace(/"/g, '&quot;')
-    : text;
+    return _.isString(text)
+      ? text
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/'/g, '&#39;')
+          .replace(/"/g, '&quot;')
+      : text;
   };
   return function(text) {
-    return _.isArray(text)
-      ? _.map(text, noXml)
-      : noXml(text);
+    return _.isArray(text) ? _.map(text, noXml) : noXml(text);
   };
 });
 
-coreModule.filter('interpolateTemplateVars', function (templateSrv) {
+/** @ngInject */
+function interpolateTemplateVars(templateSrv) {
   var filterFunc: any = function(text, scope) {
     var scopedVars;
-    if (scope.ctrl && scope.ctrl.panel) {
-      scopedVars = scope.ctrl.panel.scopedVars;
+    if (scope.ctrl) {
+      scopedVars = (scope.ctrl.panel || scope.ctrl.row).scopedVars;
     } else {
       scopedVars = scope.row.scopedVars;
     }
@@ -71,6 +68,7 @@ coreModule.filter('interpolateTemplateVars', function (templateSrv) {
 
   filterFunc.$stateful = true;
   return filterFunc;
-});
+}
 
+coreModule.filter('interpolateTemplateVars', interpolateTemplateVars);
 export default {};

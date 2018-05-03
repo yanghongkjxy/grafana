@@ -29,6 +29,17 @@ func (db *Sqlite3) AutoIncrStr() string {
 	return "AUTOINCREMENT"
 }
 
+func (db *Sqlite3) BooleanStr(value bool) string {
+	if value {
+		return "1"
+	}
+	return "0"
+}
+
+func (db *Sqlite3) DateTimeFunc(value string) string {
+	return "datetime(" + value + ")"
+}
+
 func (db *Sqlite3) SqlType(c *Column) string {
 	switch c.Type {
 	case DB_Date, DB_DateTime, DB_TimeStamp, DB_Time:
